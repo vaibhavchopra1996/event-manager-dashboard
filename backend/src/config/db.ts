@@ -1,17 +1,35 @@
-import { Pool } from 'pg';
-import dotenv from 'dotenv';
+import { Pool, type PoolClient, type QueryResultRow } from 'pg';
+import { env } from './env';
 
-dotenv.config();
-
-const pool = new Pool({
-  user: process.env.DB_USER,
-  host: process.env.DB_HOST,
-  database: process.env.DB_NAME,
-  password: process.env.DB_PASSWORD,
-  port: Number(process.env.DB_PORT) || 5432,
-  ssl: {
-    rejectUnauthorized: false // Crucial for connection to Neon cloud
-  }
+export const pool = new Pool({
+  connectionString: env.databaseUrl,
+  max: 10,
+  idleTimeoutMillis: 30_000,
+  connectionTimeoutMillis: 5_000,
+  ssl: env.nodeEnv === 'production' && process.env.PGSSL === 'true' ? { rejectUnauthorized: false } : undefined,
 });
 
-export default pool;
+export async function query<T extends QueryResultRow>(text: string, params: unknown[] = []): Promise<T[]> {
+  const result = await pool.query<T>(text, params);
+  return result.rows;
+}
+
+export async function queryOne<T extends QueryResultRow>(text: string, params: unknown[] = []): Promise<T | null> {
+  const rows = await query<T>(text, params);
+  return rows[0] ?? null;
+}
+
+export async function withTransaction<T>(fn: (client: PoolClient) => Promise<T>): Promise<T> {
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const result = await fn(client);
+    await client.query('COMMIT');
+    return result;
+  } catch (error) {
+    await client.query('ROLLBACK');
+    throw error;
+  } finally {
+    client.release();
+  }
+}
